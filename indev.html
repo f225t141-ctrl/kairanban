@@ -1,0 +1,719 @@
+import React, { useState } from 'react';
+import { Plus, Check, FileText, User, Users, Calendar, X, CheckCircle2, AlertCircle, Sparkles, Loader2, Home, MapPin, Store, Bell, ChevronRight, Map, AlertTriangle, Phone, ShieldAlert, Navigation } from 'lucide-react';
+
+// 初期データ（サンプル）
+const initialCirculars = [
+  {
+    id: '1',
+    title: '春の町内一斉清掃のお知らせ',
+    content: '住民の皆様\n\n日頃は町内会活動にご協力いただきありがとうございます。\nさて、恒例の春の町内一斉清掃を以下の通り実施いたします。\n\n日時：4月25日（日）午前9時〜11時\n集合場所：町内会館前\n持ち物：軍手、ほうき、ゴミ袋等（お持ちの方）\n\nご多忙中とは存じますが、ご参加のほどよろしくお願いいたします。',
+    author: '町内会長 山田',
+    date: '2026-04-15',
+    signatures: ['鈴木', '佐藤', '高橋']
+  },
+  {
+    id: '2',
+    title: '資源ゴミ回収日の変更について',
+    content: '来月より、資源ゴミ（古紙・段ボール）の回収日が変更になります。\n\n【現在】毎月 第1・第3 水曜日\n【変更後】毎月 第2・第4 水曜日\n\nお間違えのないよう、よろしくお願いいたします。',
+    author: '環境担当 伊藤',
+    date: '2026-04-16',
+    signatures: ['山田']
+  }
+];
+
+// --- ホーム画面用ダミーデータ ---
+const localNews = [
+  { id: 1, title: '鴨川クリーン作戦 ボランティア募集', date: '5/10', type: 'お知らせ', color: 'bg-blue-100 text-blue-700' },
+  { id: 2, title: '駅前商店街 春の感謝祭ガラポン抽選会', date: '5/1〜5/5', type: 'イベント', color: 'bg-rose-100 text-rose-700' },
+  { id: 3, title: '新しい図書館の建設に関する住民説明会', date: '5/15', type: '市政', color: 'bg-purple-100 text-purple-700' }
+];
+
+const localSpots = [
+  { id: 1, name: '鴨川デルタ', desc: '天気の良い日はピクニックに最適。トビ（鳥）には注意してください。', type: '自然・公園' },
+  { id: 2, name: '八坂神社', desc: '今週末は手作り市が開催予定です。', type: '歴史・文化' }
+];
+
+const localShops = [
+  { id: 1, name: 'ベーカリー・キョウト', offer: '「ポータルアプリ見た」で食パン20%オフ！', type: 'パン屋' },
+  { id: 2, name: '駅前クリーニング', offer: '春の衣替え応援！冬物コート半額', type: '生活' }
+];
+
+const apiKey = ""; // 実行環境で自動的に設定されます
+
+// Gemini API呼び出し用のヘルパー関数（リトライ機能付き）
+const callGeminiAPI = async (prompt, retries = 5) => {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }]
+  };
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error('API request failed');
+      const data = await response.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      await new Promise(res => setTimeout(res, Math.pow(2, i) * 1000)); // 指数バックオフ
+    }
+  }
+};
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('home'); // 'home' or 'circulars'
+  const [circulars, setCirculars] = useState(initialCirculars);
+  const [selectedId, setSelectedId] = useState(initialCirculars[0].id);
+  const [currentUser, setCurrentUser] = useState('田中'); // デフォルトのユーザー名
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  
+  // 新規作成フォームのステータス
+  const [newTitle, setNewTitle] = useState('');
+  const [newContent, setNewContent] = useState('');
+  const [newAuthor, setNewAuthor] = useState('');
+
+  // AI関連のステータス
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [summaryText, setSummaryText] = useState({}); // { id: text }
+  const [isDrafting, setIsDrafting] = useState(false);
+
+  const selectedCircular = circulars.find(c => c.id === selectedId);
+
+  // --- AI機能：要約 ---
+  const handleSummarize = async () => {
+    if (!selectedCircular) return;
+    setIsSummarizing(true);
+    try {
+      const prompt = `以下の回覧板の内容を、住民がパッと見て分かるように3〜4個の短い箇条書きで要約してください。\n\n${selectedCircular.content}`;
+      const result = await callGeminiAPI(prompt);
+      setSummaryText(prev => ({ ...prev, [selectedCircular.id]: result }));
+    } catch (error) {
+      console.error('Summary failed:', error);
+      setSummaryText(prev => ({ ...prev, [selectedCircular.id]: '要約の生成に失敗しました。時間をおいて再試行してください。' }));
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  // --- AI機能：文章の清書（フォーマル化） ---
+  const handleDraftAI = async () => {
+    if (!newContent.trim()) return;
+    setIsDrafting(true);
+    try {
+      const prompt = `以下のメモや箇条書きの文章を、町内会や社内の回覧板に適した、丁寧でフォーマルな案内文（時候の挨拶などは適宜補うか省略して簡潔に）に書き換えてください。出力は書き換えた本文のみにしてください。\n\n元のテキスト:\n${newContent}`;
+      const result = await callGeminiAPI(prompt);
+      setNewContent(result);
+    } catch (error) {
+      console.error('Drafting failed:', error);
+    } finally {
+      setIsDrafting(false);
+    }
+  };
+
+  // 回覧板の新規作成
+  const handleCreate = (e) => {
+    e.preventDefault();
+    if (!newTitle.trim() || !newContent.trim()) return;
+
+    const newCircular = {
+      id: Date.now().toString(),
+      title: newTitle,
+      content: newContent,
+      author: newAuthor || currentUser || '名無し',
+      date: new Date().toISOString().split('T')[0],
+      signatures: []
+    };
+
+    setCirculars([newCircular, ...circulars]);
+    setSelectedId(newCircular.id);
+    setIsCreateModalOpen(false);
+    setNewTitle('');
+    setNewContent('');
+    setNewAuthor('');
+  };
+
+  // 確認（サイン）する
+  const handleSign = () => {
+    if (!currentUser.trim() || !selectedCircular) return;
+    
+    // 既にサインしているかチェック
+    if (selectedCircular.signatures.includes(currentUser)) return;
+
+    const updatedCirculars = circulars.map(circular => {
+      if (circular.id === selectedId) {
+        return {
+          ...circular,
+          signatures: [...circular.signatures, currentUser]
+        };
+      }
+      return circular;
+    });
+
+    setCirculars(updatedCirculars);
+  };
+
+  const hasSigned = selectedCircular?.signatures.includes(currentUser);
+
+  // 未確認の回覧板を取得
+  const unreadCirculars = circulars.filter(c => !c.signatures.includes(currentUser));
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-800">
+      {/* ヘッダー */}
+      <header className="bg-emerald-700 text-white z-20">
+        <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-3">
+            <div className="bg-white/20 p-2 rounded-xl">
+              <MapPin className="w-6 h-6 text-white" />
+            </div>
+            <h1 className="text-xl font-bold tracking-wide">ご近所ポータル<span className="text-sm font-normal ml-3 opacity-80 border-l border-white/30 pl-3">京都エリア</span></h1>
+          </div>
+          <div className="flex items-center gap-3 bg-emerald-800/50 px-4 py-2 rounded-full border border-emerald-600/50">
+            <User className="w-4 h-4 text-emerald-200" />
+            <span className="text-sm text-emerald-100">現在のお名前:</span>
+            <input
+              type="text"
+              value={currentUser}
+              onChange={(e) => setCurrentUser(e.target.value)}
+              placeholder="お名前を入力"
+              className="bg-transparent border-b border-emerald-400 focus:outline-none focus:border-white text-white w-24 sm:w-32 placeholder-emerald-400/50"
+            />
+          </div>
+        </div>
+      </header>
+
+      {/* タブナビゲーション */}
+      <nav className="bg-emerald-700 text-white shadow-md z-10 sticky top-0 border-t border-emerald-600">
+        <div className="max-w-6xl mx-auto px-4 flex gap-2">
+          <button
+            onClick={() => setActiveTab('home')}
+            className={`py-3 px-4 flex items-center gap-2 border-b-4 transition-all ${
+              activeTab === 'home' 
+                ? 'border-white font-bold text-white bg-emerald-800/30' 
+                : 'border-transparent text-emerald-200 hover:bg-emerald-800/20'
+            }`}
+          >
+            <Home className="w-4 h-4" />
+            ホーム
+          </button>
+          <button
+            onClick={() => setActiveTab('circulars')}
+            className={`py-3 px-4 flex items-center gap-2 border-b-4 transition-all ${
+              activeTab === 'circulars' 
+                ? 'border-white font-bold text-white bg-emerald-800/30' 
+                : 'border-transparent text-emerald-200 hover:bg-emerald-800/20'
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            回覧板
+            {unreadCirculars.length > 0 && (
+              <span className="bg-rose-500 text-white text-xs font-bold px-2 py-0.5 rounded-full ml-1 shadow-sm">
+                {unreadCirculars.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('map')}
+            className={`py-3 px-4 flex items-center gap-2 border-b-4 transition-all ${
+              activeTab === 'map' 
+                ? 'border-white font-bold text-white bg-emerald-800/30' 
+                : 'border-transparent text-emerald-200 hover:bg-emerald-800/20'
+            }`}
+          >
+            <Map className="w-4 h-4" />
+            防災マップ
+          </button>
+        </div>
+      </nav>
+
+      {/* メインコンテンツ */}
+      {activeTab === 'home' && (
+        <main className="flex-1 max-w-6xl w-full mx-auto p-4 overflow-y-auto">
+          <div className="mb-6 mt-2">
+            <h2 className="text-2xl font-bold text-slate-800">こんにちは、{currentUser || 'ゲスト'}さん！</h2>
+            <p className="text-slate-500 mt-1">今日の地域の最新情報をお届けします。</p>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pb-8">
+            {/* 左・メインカラム */}
+            <div className="lg:col-span-2 space-y-6">
+              
+              {/* 未確認の回覧板アラート */}
+              <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-emerald-50/50">
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-emerald-600"/> 
+                    未確認の回覧板
+                  </h3>
+                  <button 
+                    onClick={() => setActiveTab('circulars')} 
+                    className="text-sm text-emerald-600 hover:text-emerald-700 hover:underline flex items-center font-medium"
+                  >
+                    すべて見る <ChevronRight className="w-4 h-4"/>
+                  </button>
+                </div>
+                <div className="p-2">
+                  {unreadCirculars.length > 0 ? (
+                    <div className="space-y-2">
+                      {unreadCirculars.slice(0, 3).map(circular => (
+                        <div key={circular.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 hover:bg-slate-50 rounded-lg border border-slate-100 transition-colors gap-3">
+                          <div>
+                            <span className="text-xs text-slate-500 mb-1 block">{circular.date} • {circular.author}</span>
+                            <p className="font-medium text-slate-800">{circular.title}</p>
+                          </div>
+                          <button 
+                            onClick={() => {
+                              setSelectedId(circular.id);
+                              setActiveTab('circulars');
+                            }}
+                            className="px-4 py-2 bg-emerald-100 text-emerald-700 text-sm font-medium rounded-lg hover:bg-emerald-200 transition-colors whitespace-nowrap"
+                          >
+                            確認する
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-6 text-center text-slate-500 flex flex-col items-center">
+                      <CheckCircle2 className="w-8 h-8 text-emerald-400 mb-2" />
+                      <p>未確認の回覧板はありません。すべて確認済みです！</p>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* 地域のお知らせ */}
+              <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-5">
+                  <Bell className="w-5 h-5 text-amber-500"/> 
+                  地域のお知らせ・ニュース
+                </h3>
+                <div className="space-y-4">
+                  {localNews.map(news => (
+                    <div key={news.id} className="flex items-start gap-4 pb-4 border-b border-slate-100 last:border-0 last:pb-0">
+                      <div className="flex-shrink-0 w-16 pt-1 text-sm font-bold text-slate-500 text-center">
+                        {news.date}
+                      </div>
+                      <div className="flex-1">
+                        <span className={`inline-block px-2 py-0.5 rounded text-xs font-bold mb-1.5 ${news.color}`}>
+                          {news.type}
+                        </span>
+                        <p className="font-medium text-slate-800 leading-tight">{news.title}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            {/* 右・サイドカラム */}
+            <div className="space-y-6">
+              
+              {/* 地元の応援・クーポン */}
+              <section className="bg-gradient-to-br from-orange-50 to-amber-50 rounded-2xl shadow-sm border border-orange-100 p-5">
+                <h3 className="text-lg font-bold text-orange-800 flex items-center gap-2 mb-4">
+                  <Store className="w-5 h-5 text-orange-600"/> 
+                  地元のお店情報
+                </h3>
+                <div className="space-y-3">
+                  {localShops.map(shop => (
+                    <div key={shop.id} className="bg-white/80 backdrop-blur-sm p-4 rounded-xl border border-orange-200/50 hover:shadow-md transition-shadow">
+                      <div className="flex justify-between items-start mb-2">
+                        <h4 className="font-bold text-slate-800">{shop.name}</h4>
+                        <span className="text-[10px] font-bold bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">{shop.type}</span>
+                      </div>
+                      <p className="text-sm text-orange-700 font-medium flex items-start gap-1">
+                        <Sparkles className="w-4 h-4 flex-shrink-0 mt-0.5 text-orange-500" />
+                        {shop.offer}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {/* 観光・スポット情報 */}
+              <section className="bg-gradient-to-br from-blue-50 to-cyan-50 rounded-2xl shadow-sm border border-blue-100 p-5">
+                <h3 className="text-lg font-bold text-blue-800 flex items-center gap-2 mb-4">
+                  <MapPin className="w-5 h-5 text-blue-600"/> 
+                  今週のおすすめスポット
+                </h3>
+                <div className="space-y-4">
+                  {localSpots.map(spot => (
+                    <div key={spot.id} className="bg-white/80 backdrop-blur-sm rounded-xl overflow-hidden border border-blue-200/50 hover:shadow-md transition-shadow">
+                      <div className="h-24 bg-blue-200/50 flex items-center justify-center text-blue-600/70 font-medium text-sm border-b border-blue-100">
+                        
+                      </div>
+                      <div className="p-3">
+                        <div className="flex justify-between items-center mb-1.5">
+                          <h4 className="font-bold text-slate-800 text-sm">{spot.name}</h4>
+                          <span className="text-[10px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded">{spot.type}</span>
+                        </div>
+                        <p className="text-xs text-slate-600 leading-relaxed">{spot.desc}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <div className="bg-slate-100 rounded-xl p-4 text-center border border-slate-200 border-dashed">
+                <p className="text-sm text-slate-500 font-medium mb-3">お店やイベントを宣伝しませんか？</p>
+                <button className="text-sm bg-white border border-slate-300 text-slate-700 font-medium px-4 py-2 rounded-lg hover:bg-slate-50 transition-colors shadow-sm w-full">
+                  掲載を申し込む
+                </button>
+              </div>
+
+            </div>
+          </div>
+        </main>
+      )}
+
+      {activeTab === 'map' && (
+        <main className="flex-1 max-w-6xl w-full mx-auto p-4 overflow-y-auto">
+          <div className="mb-6 mt-2">
+            <h2 className="text-2xl font-bold text-slate-800">防災・避難マップ</h2>
+            <p className="text-slate-500 mt-1">いざという時の避難場所やルートを確認できます。</p>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pb-8">
+            {/* 左・メインカラム（マップエリア） */}
+            <div className="lg:col-span-2 space-y-4">
+              <div className="bg-slate-200 rounded-2xl h-[400px] relative overflow-hidden border-2 border-slate-300 flex items-center justify-center shadow-inner">
+                {/* 背景のグリッド模様でマップっぽさを演出 */}
+                <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(#94a3b8 2px, transparent 2px)', backgroundSize: '30px 30px' }}></div>
+                
+                {/* マップ上のUIオーバーレイ */}
+                <div className="text-center z-10 p-6 bg-white/95 backdrop-blur rounded-xl shadow-lg border border-slate-200 w-3/4 max-w-sm">
+                  <Map className="w-12 h-12 text-emerald-600 mx-auto mb-3" />
+                  <h3 className="text-lg font-bold text-slate-800">京都エリア防災マップ</h3>
+                  <p className="text-sm text-slate-500 mt-2 mb-4">現在地からの最適な避難ルートを検索します。</p>
+                  <button className="bg-emerald-600 text-white px-6 py-3 rounded-full font-bold hover:bg-emerald-700 flex items-center gap-2 w-full justify-center shadow-md transition-transform hover:scale-105">
+                    <Navigation className="w-5 h-5"/>
+                    最寄りの避難所へナビ開始
+                  </button>
+                </div>
+
+                {/* ダミーのマップピン */}
+                <div className="absolute top-1/4 left-1/4 flex flex-col items-center animate-bounce">
+                  <div className="bg-emerald-500 text-white p-2 rounded-full shadow-lg border-2 border-white"><ShieldAlert className="w-5 h-5"/></div>
+                  <span className="text-xs font-bold mt-1 bg-white/90 px-2 py-0.5 rounded shadow-sm">第一小学校</span>
+                </div>
+                <div className="absolute bottom-1/3 right-1/4 flex flex-col items-center">
+                  <div className="bg-rose-500 text-white p-2 rounded-full shadow-lg border-2 border-white"><AlertTriangle className="w-5 h-5"/></div>
+                  <span className="text-xs font-bold mt-1 bg-white/90 px-2 py-0.5 rounded shadow-sm text-rose-700">浸水警戒エリア</span>
+                </div>
+              </div>
+
+              {/* マップの凡例 */}
+              <div className="flex flex-wrap gap-4 p-4 bg-white rounded-xl shadow-sm border border-slate-200">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700"><div className="w-4 h-4 bg-emerald-500 rounded-full shadow-inner"></div> 避難所</div>
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700"><div className="w-4 h-4 bg-blue-500 rounded-full shadow-inner"></div> 給水所</div>
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700"><div className="w-4 h-4 bg-rose-500 rounded-full shadow-inner"></div> 危険箇所</div>
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700"><div className="w-4 h-4 bg-amber-500 rounded-full shadow-inner"></div> AED設置場所</div>
+              </div>
+            </div>
+
+            {/* 右・サイドカラム（リスト・連絡先） */}
+            <div className="space-y-6">
+              {/* 避難所リスト */}
+              <section className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-5 border-t-4 border-t-emerald-500">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-4">
+                  <ShieldAlert className="w-5 h-5 text-emerald-600"/> 
+                  周辺の避難所状況
+                </h3>
+                <div className="space-y-3">
+                  <div className="p-3 border border-emerald-200 rounded-lg bg-emerald-50">
+                    <div className="flex justify-between items-start">
+                      <h4 className="font-bold text-emerald-900">○○小学校 体育館</h4>
+                      <span className="text-xs bg-emerald-500 text-white font-bold px-2 py-0.5 rounded shadow-sm">開設中</span>
+                    </div>
+                    <p className="text-xs text-emerald-700 mt-1 font-medium">ここから約400m / 徒歩5分</p>
+                    <p className="text-xs text-emerald-600 mt-2 flex items-center gap-1"><Users className="w-3 h-3"/> 混雑度: 空きあり</p>
+                  </div>
+                  <div className="p-3 border border-slate-200 rounded-lg bg-white">
+                    <div className="flex justify-between items-start">
+                      <h4 className="font-bold text-slate-700">△△地域コミュニティセンター</h4>
+                      <span className="text-xs bg-slate-200 text-slate-600 font-bold px-2 py-0.5 rounded">準備中</span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">ここから約800m / 徒歩10分</p>
+                  </div>
+                </div>
+              </section>
+
+              {/* 緊急連絡先 */}
+              <section className="bg-rose-50 rounded-2xl shadow-sm border border-rose-100 p-5">
+                <h3 className="text-lg font-bold text-rose-800 flex items-center gap-2 mb-4">
+                  <Phone className="w-5 h-5 text-rose-600"/> 
+                  緊急連絡先
+                </h3>
+                <div className="space-y-2">
+                  <a href="tel:110" className="w-full flex justify-between items-center bg-white p-3 rounded-lg border border-rose-100 hover:border-rose-300 hover:shadow-sm transition-all group">
+                    <span className="font-medium text-slate-700 group-hover:text-rose-700 transition-colors">警察 (事件・事故)</span>
+                    <span className="font-bold text-rose-600 text-xl tracking-wider">110</span>
+                  </a>
+                  <a href="tel:119" className="w-full flex justify-between items-center bg-white p-3 rounded-lg border border-rose-100 hover:border-rose-300 hover:shadow-sm transition-all group">
+                    <span className="font-medium text-slate-700 group-hover:text-rose-700 transition-colors">消防・救急</span>
+                    <span className="font-bold text-rose-600 text-xl tracking-wider">119</span>
+                  </a>
+                  <a href="tel:171" className="w-full flex justify-between items-center bg-white p-3 rounded-lg border border-rose-100 hover:border-rose-300 hover:shadow-sm transition-all group">
+                    <span className="font-medium text-slate-700 group-hover:text-rose-700 transition-colors">災害用伝言ダイヤル</span>
+                    <span className="font-bold text-rose-600 text-xl tracking-wider">171</span>
+                  </a>
+                </div>
+              </section>
+            </div>
+          </div>
+        </main>
+      )}
+
+      {activeTab === 'circulars' && (
+        <main className="flex-1 max-w-6xl w-full mx-auto p-4 flex flex-col md:flex-row gap-6 h-[calc(100vh-140px)]">
+        
+        {/* 左ペイン：回覧板リスト */}
+        <div className="w-full md:w-1/3 flex flex-col bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden h-full">
+          <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+            <h2 className="font-semibold text-slate-700">回覧一覧</h2>
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              className="p-2 bg-emerald-100 text-emerald-700 rounded-lg hover:bg-emerald-200 transition-colors flex items-center gap-1 text-sm font-medium"
+            >
+              <Plus className="w-4 h-4" />
+              <span>新規作成</span>
+            </button>
+          </div>
+          <div className="overflow-y-auto flex-1 p-2 space-y-2">
+            {circulars.map((circular) => {
+              const isSelected = circular.id === selectedId;
+              const isSigned = circular.signatures.includes(currentUser);
+              
+              return (
+                <button
+                  key={circular.id}
+                  onClick={() => setSelectedId(circular.id)}
+                  className={`w-full text-left p-3 rounded-lg transition-all duration-200 border-2 ${
+                    isSelected 
+                      ? 'border-emerald-500 bg-emerald-50 shadow-sm' 
+                      : 'border-transparent hover:bg-slate-50 hover:border-slate-200'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-1">
+                    <span className="text-xs text-slate-500 flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      {circular.date}
+                    </span>
+                    {isSigned && (
+                      <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        確認済
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="font-medium text-slate-800 line-clamp-1">{circular.title}</h3>
+                  <div className="flex justify-between items-center mt-2">
+                    <span className="text-xs text-slate-500">{circular.author}</span>
+                    <span className="text-xs text-slate-400 flex items-center gap-1">
+                      <Users className="w-3 h-3" />
+                      {circular.signatures.length}人
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 右ペイン：詳細と確認 */}
+        <div className="w-full md:w-2/3 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-full">
+          {selectedCircular ? (
+            <>
+              {/* 回覧板ヘッダー */}
+              <div className="p-6 border-b border-slate-100">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2 text-sm text-slate-500">
+                    <span className="flex items-center gap-1"><Calendar className="w-4 h-4"/> {selectedCircular.date}</span>
+                    <span>/</span>
+                    <span className="flex items-center gap-1"><User className="w-4 h-4"/> {selectedCircular.author}</span>
+                  </div>
+                  {/* AI要約ボタン */}
+                  <button
+                    onClick={handleSummarize}
+                    disabled={isSummarizing || summaryText[selectedCircular.id]}
+                    className="text-xs flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-full transition-colors disabled:opacity-50 font-medium"
+                  >
+                    {isSummarizing ? (
+                      <><Loader2 className="w-3 h-3 animate-spin" /> 要約中...</>
+                    ) : summaryText[selectedCircular.id] ? (
+                      <><Sparkles className="w-3 h-3" /> AI要約済み</>
+                    ) : (
+                      <><Sparkles className="w-3 h-3" /> ✨ AIで要約</>
+                    )}
+                  </button>
+                </div>
+                <h2 className="text-2xl font-bold text-slate-800">{selectedCircular.title}</h2>
+              </div>
+
+              {/* 回覧板本文 */}
+              <div className="p-6 overflow-y-auto flex-1">
+                {summaryText[selectedCircular.id] && (
+                  <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-lg">
+                    <h4 className="text-sm font-bold text-indigo-800 mb-2 flex items-center gap-1">
+                      <Sparkles className="w-4 h-4" />
+                      AI 要約
+                    </h4>
+                    <div className="text-sm text-indigo-900 whitespace-pre-wrap leading-relaxed">
+                      {summaryText[selectedCircular.id]}
+                    </div>
+                  </div>
+                )}
+                <div className="whitespace-pre-wrap text-slate-700 leading-relaxed min-h-[150px]">
+                  {selectedCircular.content}
+                </div>
+              </div>
+
+              {/* アクション＆署名リスト */}
+              <div className="bg-slate-50 p-6 border-t border-slate-100">
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-6">
+                  
+                  {/* 署名ボタンエリア */}
+                  <div className="w-full sm:w-auto flex flex-col items-center sm:items-start gap-2">
+                    {!currentUser.trim() ? (
+                      <div className="flex items-center gap-2 text-amber-600 bg-amber-50 px-4 py-2 rounded-lg text-sm">
+                        <AlertCircle className="w-4 h-4" />
+                        確認するには上部でお名前を入力してください
+                      </div>
+                    ) : hasSigned ? (
+                      <button 
+                        disabled
+                        className="px-6 py-3 bg-slate-200 text-slate-500 rounded-lg flex items-center gap-2 font-medium cursor-not-allowed w-full sm:w-auto justify-center"
+                      >
+                        <CheckCircle2 className="w-5 h-5" />
+                        確認済みです
+                      </button>
+                    ) : (
+                      <button 
+                        onClick={handleSign}
+                        className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center gap-2 font-medium transition-colors w-full sm:w-auto justify-center shadow-sm hover:shadow"
+                      >
+                        <Check className="w-5 h-5" />
+                        確認しました（サインする）
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 署名済みリスト */}
+                  <div className="w-full sm:w-1/2">
+                    <h4 className="text-sm font-semibold text-slate-500 mb-2 flex items-center gap-1">
+                      <Users className="w-4 h-4" />
+                      確認した人 ({selectedCircular.signatures.length}人)
+                    </h4>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedCircular.signatures.length > 0 ? (
+                        selectedCircular.signatures.map((name, idx) => (
+                          <span key={idx} className="bg-white border border-slate-200 text-slate-600 px-3 py-1 rounded-full text-sm shadow-sm">
+                            {name}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-sm text-slate-400">まだ確認した人はいません</span>
+                      )}
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
+              <FileText className="w-16 h-16 mb-4 opacity-20" />
+              <p>左のリストから回覧板を選択してください</p>
+            </div>
+          )}
+        </div>
+        </main>
+      )}
+
+      {/* 新規作成モーダル */}
+      {isCreateModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h3 className="text-lg font-bold text-slate-800">新しい回覧板を作成</h3>
+              <button 
+                onClick={() => setIsCreateModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-full hover:bg-slate-200 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleCreate} className="p-6 flex flex-col gap-4 overflow-y-auto">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">件名 <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  required
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                  placeholder="例：秋の防災訓練について"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">差出人</label>
+                <input
+                  type="text"
+                  value={newAuthor}
+                  onChange={(e) => setNewAuthor(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                  placeholder={`例：防災担当（空欄の場合は「${currentUser}」）`}
+                />
+              </div>
+              <div className="flex-1 min-h-[200px] flex flex-col">
+                <div className="flex justify-between items-end mb-1">
+                  <label className="block text-sm font-medium text-slate-700">本文 <span className="text-red-500">*</span></label>
+                  <button
+                    type="button"
+                    onClick={handleDraftAI}
+                    disabled={isDrafting || !newContent.trim()}
+                    className="text-xs flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-lg transition-colors disabled:opacity-50 font-medium"
+                    title="箇条書きなどのメモを丁寧な案内文に自動変換します"
+                  >
+                    {isDrafting ? (
+                      <><Loader2 className="w-3 h-3 animate-spin" /> 生成中...</>
+                    ) : (
+                      <><Sparkles className="w-3 h-3" /> ✨ AIで丁寧な文章にする</>
+                    )}
+                  </button>
+                </div>
+                <textarea
+                  required
+                  value={newContent}
+                  onChange={(e) => setNewContent(e.target.value)}
+                  className="w-full h-full min-h-[150px] px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent resize-y"
+                  placeholder="お知らせの内容を入力してください...&#10;（例：次回の草むしり 5/10 9時〜 公園集合）と書いて「✨AIで丁寧な文章にする」を押すと、しっかりとした文面に変換されます！"
+                ></textarea>
+              </div>
+              <div className="pt-4 flex justify-end gap-3 mt-auto">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateModalOpen(false)}
+                  className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg font-medium transition-colors"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition-colors shadow-sm"
+                >
+                  回覧を開始する
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
